@@ -11,7 +11,8 @@ import {
   User, 
   Loader,
   RefreshCw,
-  Edit2
+  Edit2,
+  Layers
 } from 'lucide-react';
 import './App.css';
 
@@ -48,8 +49,23 @@ interface ProfileItem {
 }
 
 export default function App() {
-  // Navigation tabs: 'simulation' | 'history' | 'profiles'
-  const [activeTab, setActiveTab] = useState<'simulation' | 'history' | 'profiles'>('simulation');
+  // Navigation tabs: 'simulation' | 'history' | 'profiles' | 'shadow' | 'bundle'
+  const [activeTab, setActiveTab] = useState<'simulation' | 'history' | 'profiles' | 'shadow' | 'bundle'>('simulation');
+
+  // Bundle Sourcing state
+  const [bundleBudget, setBundleBudget] = useState(5000);
+  const [isBundleStreaming, setIsBundleStreaming] = useState(false);
+  const [bundleMessages, setBundleMessages] = useState<any[]>([]);
+  const [bundleVendors, setBundleVendors] = useState<any>(null);
+  const [bundleTotalSpent, setBundleTotalSpent] = useState(0);
+  const [bundleConclusion, setBundleConclusion] = useState<any>(null);
+  const [bundleError, setBundleError] = useState<string | null>(null);
+
+  // Shadow Play state
+  const [shadowIterations, setShadowIterations] = useState(6);
+  const [isShadowRunning, setIsShadowRunning] = useState(false);
+  const [shadowResults, setShadowResults] = useState<any>(null);
+  const [shadowError, setShadowError] = useState<string | null>(null);
 
   // Negotiation configuration
   const [itemName, setItemName] = useState('Custom API Integration');
@@ -106,7 +122,7 @@ export default function App() {
     if (chatBottomRef.current) {
       chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, isStreaming, isBreakpoint]);
+  }, [messages, bundleMessages, isStreaming, isBreakpoint, isBundleStreaming]);
 
   // Clean up EventSource on unmount
   useEffect(() => {
@@ -172,6 +188,38 @@ export default function App() {
       }
     } catch (e) {
       console.error("Failed to update profile", e);
+    }
+  };
+
+  const startShadowPlay = async () => {
+    setIsShadowRunning(true);
+    setShadowError(null);
+    setShadowResults(null);
+
+    try {
+      const res = await fetch('/api/negotiate/shadow-play', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_name: itemName,
+          buyer_max: buyerMax,
+          buyer_target: buyerTarget,
+          seller_min: sellerMin,
+          seller_target: sellerTarget,
+          iterations: shadowIterations
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error("Game-Theory simulation request failed");
+      }
+
+      const data = await res.json();
+      setShadowResults(data);
+    } catch (err: any) {
+      setShadowError(err.message || "An unexpected error occurred during shadow simulation");
+    } finally {
+      setIsShadowRunning(false);
     }
   };
 
@@ -327,6 +375,56 @@ export default function App() {
     }
   };
 
+  const startBundleSourcing = () => {
+    setBundleError(null);
+    setBundleConclusion(null);
+    setBundleMessages([]);
+    setBundleTotalSpent(0);
+    setBundleVendors(null);
+    setIsBundleStreaming(true);
+
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const es = new EventSource(`/api/negotiate/bundle/stream/${bundleBudget}`);
+    eventSourceRef.current = es;
+
+    es.addEventListener('bundle_start', (e) => {
+      const data = JSON.parse(e.data);
+      setBundleVendors(data.vendors);
+    });
+
+    es.addEventListener('bundle_message', (e) => {
+      const data = JSON.parse(e.data);
+      setBundleMessages(prev => [...prev, data]);
+    });
+
+    es.addEventListener('bundle_checkpoint', (e) => {
+      const data = JSON.parse(e.data);
+      setBundleVendors(data.vendors);
+      setBundleTotalSpent(data.total_spent);
+    });
+
+    es.addEventListener('bundle_concluded', (e) => {
+      const data = JSON.parse(e.data);
+      setBundleConclusion(data);
+      setIsBundleStreaming(false);
+      es.close();
+      
+      // Refresh DB summaries
+      fetchHistory();
+      fetchProfiles();
+    });
+
+    es.addEventListener('error', (e) => {
+      console.error("Bundle stream error", e);
+      setBundleError("Negotiation connection lost or completed.");
+      setIsBundleStreaming(false);
+      es.close();
+    });
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status.toLowerCase()) {
       case 'active':
@@ -362,6 +460,20 @@ export default function App() {
           >
             <Sparkles size={16} />
             Simulation
+          </button>
+          <button 
+            className={`tab-btn ${activeTab === 'bundle' ? 'active' : ''}`}
+            onClick={() => setActiveTab('bundle')}
+          >
+            <Layers size={16} />
+            Bundle Sourcing
+          </button>
+          <button 
+            className={`tab-btn ${activeTab === 'shadow' ? 'active' : ''}`}
+            onClick={() => setActiveTab('shadow')}
+          >
+            <Brain size={16} />
+            Shadow Play Predictor
           </button>
           <button 
             className={`tab-btn ${activeTab === 'profiles' ? 'active' : ''}`}
@@ -808,6 +920,551 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {activeTab === 'shadow' && (
+          <>
+            {/* Left Column - Configuration & Status */}
+            <div className="panel">
+              <div className="card">
+                <div className="card-title">
+                  <Brain size={16} />
+                  Shadow Play Configurator
+                </div>
+                
+                <div className="form-grid">
+                  <div className="input-group">
+                    <label htmlFor="shadow-item-name">Negotiation Item / Service</label>
+                    <input 
+                      id="shadow-item-name"
+                      type="text" 
+                      value={itemName} 
+                      onChange={(e) => setItemName(e.target.value)} 
+                      placeholder="e.g. Custom API Integration"
+                      disabled={isShadowRunning}
+                    />
+                  </div>
+
+                  <div className="form-row">
+                    <div className="input-group">
+                      <label htmlFor="shadow-buyer-max">Buyer Max Budget ($)</label>
+                      <input 
+                        id="shadow-buyer-max"
+                        type="number" 
+                        value={buyerMax} 
+                        onChange={(e) => setBuyerMax(Number(e.target.value))}
+                        disabled={isShadowRunning}
+                      />
+                    </div>
+                    <div className="input-group">
+                      <label htmlFor="shadow-buyer-target">Buyer Target ($)</label>
+                      <input 
+                        id="shadow-buyer-target"
+                        type="number" 
+                        value={buyerTarget} 
+                        onChange={(e) => setBuyerTarget(Number(e.target.value))}
+                        disabled={isShadowRunning}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-row">
+                    <div className="input-group">
+                      <label htmlFor="shadow-seller-min">Seller Min Price ($)</label>
+                      <input 
+                        id="shadow-seller-min"
+                        type="number" 
+                        value={sellerMin} 
+                        onChange={(e) => setSellerMin(Number(e.target.value))}
+                        disabled={isShadowRunning}
+                      />
+                    </div>
+                    <div className="input-group">
+                      <label htmlFor="shadow-seller-target">Seller Target ($)</label>
+                      <input 
+                        id="shadow-seller-target"
+                        type="number" 
+                        value={sellerTarget} 
+                        onChange={(e) => setSellerTarget(Number(e.target.value))}
+                        disabled={isShadowRunning}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="input-group">
+                    <label htmlFor="shadow-iterations">Simulation Runs (Iterations)</label>
+                    <select
+                      id="shadow-iterations"
+                      value={shadowIterations}
+                      onChange={(e) => setShadowIterations(Number(e.target.value))}
+                      disabled={isShadowRunning}
+                      style={{
+                        backgroundColor: 'var(--bg-primary)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '10px 12px',
+                        fontSize: '14px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <option value={4}>4 Iterations (Fast)</option>
+                      <option value={6}>6 Iterations (Optimal)</option>
+                      <option value={10}>10 Iterations (Thorough)</option>
+                      <option value={15}>15 Iterations (Maximum)</option>
+                    </select>
+                  </div>
+
+                  <button 
+                    className="btn btn-primary"
+                    onClick={startShadowPlay}
+                    disabled={isShadowRunning || !itemName}
+                  >
+                    {isShadowRunning ? (
+                      <>
+                        <Loader className="spinner" size={16} />
+                        Simulating Game-Theory...
+                      </>
+                    ) : (
+                      <>
+                        <Play size={16} />
+                        Run Shadow Predictor
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Memory Insights Context Display */}
+              <div className="card">
+                <div className="card-title">
+                  <Brain size={16} />
+                  Memory Grounding Used
+                </div>
+                <div className="form-grid">
+                  <div className="input-group">
+                    <label>Injected Memory on Seller</label>
+                    <div className="memory-box">{buyerMemoryContext}</div>
+                  </div>
+                  <div className="input-group">
+                    <label>Injected Memory on Buyer</label>
+                    <div className="memory-box">{sellerMemoryContext}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Right Column - Simulation Results Dashboard */}
+            <div className="panel" style={{flexGrow: 1}}>
+              <div className="card" style={{minHeight: '400px'}}>
+                <div className="card-title">
+                  <Sparkles size={16} />
+                  Shadow Play Simulation Predictions
+                </div>
+
+                {/* Idle / Blank State */}
+                {!isShadowRunning && !shadowResults && !shadowError && (
+                  <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '350px', color: 'var(--text-muted)'}}>
+                    <Brain size={48} style={{opacity: 0.15, marginBottom: '16px'}} />
+                    <p>Run the Game-Theory Shadow Play Predictor above.</p>
+                    <p style={{fontSize: '12px', marginTop: '4px'}}>
+                      This will run multiple automated agent negotiations in parallel to yield statistical closing probabilities and AI advisor strategy recommendations.
+                    </p>
+                  </div>
+                )}
+
+                {/* Running State */}
+                {isShadowRunning && (
+                  <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '350px', color: 'var(--text-secondary)'}}>
+                    <Loader className="spinner" size={32} style={{marginBottom: '16px'}} />
+                    <p style={{fontWeight: 600}}>Simulating multi-agent game interactions...</p>
+                    <p style={{fontSize: '12px', marginTop: '4px', color: 'var(--text-muted)'}}>
+                      Resolving contract breakpoints and polling AWS Bedrock models.
+                    </p>
+                  </div>
+                )}
+
+                {/* Error Banner */}
+                {shadowError && (
+                  <div className="memory-update-alert" style={{borderColor: 'rgba(239, 68, 68, 0.4)', background: 'var(--color-danger-bg)', color: '#ef4444', margin: '20px 0'}}>
+                    <AlertCircle size={16} />
+                    <span>{shadowError}</span>
+                  </div>
+                )}
+
+                {/* Results Visualizer */}
+                {shadowResults && (
+                  <div style={{display: 'flex', flexDirection: 'column', gap: '24px', animation: 'fade-in 0.3s'}}>
+                    
+                    {/* KPI Cards Grid */}
+                    <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '16px'}}>
+                      <div className="card" style={{background: 'rgba(0,0,0,0.15)', padding: '16px', textAlign: 'center'}}>
+                        <div style={{fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '8px'}}>Success Rate</div>
+                        <div style={{fontSize: '28px', fontWeight: 800, color: shadowResults.success_rate > 50 ? 'var(--color-seller)' : 'var(--color-danger)'}}>
+                          {shadowResults.success_rate.toFixed(0)}%
+                        </div>
+                        <div style={{fontSize: '10px', color: 'var(--text-muted)', marginTop: '4px'}}>
+                          {shadowResults.success_count} of {shadowIterations} runs signed
+                        </div>
+                      </div>
+                      
+                      <div className="card" style={{background: 'rgba(0,0,0,0.15)', padding: '16px', textAlign: 'center'}}>
+                        <div style={{fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '8px'}}>Avg Closing Price</div>
+                        <div style={{fontSize: '28px', fontWeight: 800, color: 'var(--color-buyer)'}}>
+                          {shadowResults.avg_price > 0 ? `$${shadowResults.avg_price.toLocaleString(undefined, {maximumFractionDigits: 0})}` : '—'}
+                        </div>
+                        <div style={{fontSize: '10px', color: 'var(--text-muted)', marginTop: '4px'}}>
+                          On successful signings
+                        </div>
+                      </div>
+
+                      <div className="card" style={{background: 'rgba(0,0,0,0.15)', padding: '16px', textAlign: 'center'}}>
+                        <div style={{fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '8px'}}>Price Spread</div>
+                        <div style={{fontSize: '20px', fontWeight: 800, color: 'var(--text-primary)', marginTop: '6px'}}>
+                          {shadowResults.min_price > 0 ? `$${shadowResults.min_price.toLocaleString(undefined, {maximumFractionDigits: 0})} - $${shadowResults.max_price.toLocaleString(undefined, {maximumFractionDigits: 0})}` : '—'}
+                        </div>
+                        <div style={{fontSize: '10px', color: 'var(--text-muted)', marginTop: '8px'}}>
+                          Min to Max range
+                        </div>
+                      </div>
+
+                      <div className="card" style={{background: 'rgba(0,0,0,0.15)', padding: '16px', textAlign: 'center'}}>
+                        <div style={{fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '8px'}}>Aborted / Failed</div>
+                        <div style={{fontSize: '28px', fontWeight: 800, color: 'var(--color-danger)'}}>
+                          {shadowResults.aborted_count + shadowResults.failed_count}
+                        </div>
+                        <div style={{fontSize: '10px', color: 'var(--text-muted)', marginTop: '4px'}}>
+                          Walk-aways or errors
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Price Distribution Bar Chart */}
+                    <div className="card" style={{background: 'rgba(255, 255, 255, 0.01)', border: '1px solid var(--border-color)', padding: '16px'}}>
+                      <div style={{fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '6px'}}>
+                        <Database size={14} />
+                        Settlement Price Bracket Frequency
+                      </div>
+                      
+                      <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
+                        {shadowResults.distribution.map((bin: any, idx: number) => {
+                          const percentage = shadowResults.success_count > 0 ? (bin.count / shadowIterations) * 100 : 0;
+                          return (
+                            <div key={idx} style={{display: 'flex', alignItems: 'center', gap: '12px', fontSize: '13px'}}>
+                              <div style={{width: '100px', fontWeight: 500, color: 'var(--text-secondary)', fontSize: '12px'}}>{bin.label}</div>
+                              <div style={{flexGrow: 1, height: '16px', background: 'rgba(255,255,255,0.03)', borderRadius: '9999px', overflow: 'hidden', border: '1px solid var(--border-color)'}}>
+                                <div 
+                                  style={{
+                                    height: '100%', 
+                                    width: `${percentage}%`, 
+                                    background: 'linear-gradient(90deg, var(--color-buyer), var(--color-accent))',
+                                    borderRadius: '9999px',
+                                    transition: 'width 1s cubic-bezier(0.4, 0, 0.2, 1)'
+                                  }}
+                                />
+                              </div>
+                              <div style={{width: '60px', textAlign: 'right', fontWeight: 600, color: 'var(--text-primary)', fontSize: '12px'}}>
+                                {bin.count} run{bin.count !== 1 ? 's' : ''}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Bedrock Strategic Recommendations */}
+                    <div className="breakpoint-panel" style={{margin: 0, background: 'rgba(139, 92, 246, 0.04)', borderColor: 'rgba(139, 92, 246, 0.3)'}}>
+                      <div style={{display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-accent)', fontSize: '14px', fontWeight: 700, marginBottom: '12px'}}>
+                        <Brain size={18} />
+                        Game-Theory Strategic AI Recommendation
+                      </div>
+                      <div style={{fontSize: '14px', lineHeight: 1.6, color: 'var(--text-primary)', fontStyle: 'italic', paddingLeft: '8px', borderLeft: '2.5px solid var(--color-accent)'}}>
+                        "{shadowResults.advice}"
+                      </div>
+                    </div>
+
+                  </div>
+                )}
+
+              </div>
+            </div>
+          </>
+        )}
+
+        {activeTab === 'bundle' && (
+          <>
+            {/* Left Column - Configurations & Live Status */}
+            <div className="panel">
+              {/* Configuration Card */}
+              <div className="card">
+                <div className="card-title">
+                  <Layers size={16} />
+                  Coordinated Sourcing Config
+                </div>
+                
+                <div className="form-grid">
+                  <div className="input-group">
+                    <label htmlFor="bundle-budget">Unified Aggregate Budget ($)</label>
+                    <input 
+                      id="bundle-budget"
+                      type="number" 
+                      value={bundleBudget} 
+                      onChange={(e) => setBundleBudget(Number(e.target.value))} 
+                      disabled={isBundleStreaming}
+                    />
+                  </div>
+
+                  <button 
+                    className="btn btn-primary"
+                    onClick={startBundleSourcing}
+                    disabled={isBundleStreaming || bundleBudget <= 0}
+                    style={{marginTop: '8px'}}
+                  >
+                    {isBundleStreaming ? (
+                      <>
+                        <Loader className="spinner" size={16} />
+                        Negotiating Bundle...
+                      </>
+                    ) : (
+                      <>
+                        <Play size={16} />
+                        Run Bundle Simulator
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Overall Progress Tracker Card */}
+              <div className="card" style={{background: 'rgba(0,0,0,0.15)'}}>
+                <div style={{fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '8px', fontWeight: 600}}>
+                  Unified Sourcing Budget Spent
+                </div>
+                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '10px'}}>
+                  <div style={{fontSize: '24px', fontWeight: 800, color: bundleTotalSpent > bundleBudget ? 'var(--color-danger)' : 'var(--text-primary)'}}>
+                    ${bundleTotalSpent.toLocaleString(undefined, {maximumFractionDigits: 2})}
+                  </div>
+                  <div style={{fontSize: '13px', color: 'var(--text-muted)'}}>
+                    of ${bundleBudget.toLocaleString()} Max Limit
+                  </div>
+                </div>
+
+                {/* Progress Bar */}
+                <div style={{height: '8px', background: 'rgba(255,255,255,0.05)', borderRadius: '9999px', overflow: 'hidden', border: '1px solid var(--border-color)', marginBottom: '8px'}}>
+                  <div 
+                    style={{
+                      height: '100%', 
+                      width: `${Math.min((bundleTotalSpent / (bundleBudget || 1)) * 100, 100)}%`, 
+                      background: bundleTotalSpent > bundleBudget 
+                        ? 'var(--color-danger)' 
+                        : 'linear-gradient(90deg, var(--color-buyer), var(--color-accent))',
+                      borderRadius: '9999px',
+                      transition: 'width 0.4s ease'
+                    }}
+                  />
+                </div>
+
+                {bundleConclusion && (
+                  <div style={{fontSize: '12px', color: bundleConclusion.savings >= 0 ? 'var(--color-seller)' : 'var(--color-danger)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', marginTop: '12px'}}>
+                    <Check size={14} />
+                    {bundleConclusion.savings >= 0 
+                      ? `Saved $${bundleConclusion.savings.toLocaleString(undefined, {maximumFractionDigits: 2})} under original budget!` 
+                      : `Overspent budget by $${Math.abs(bundleConclusion.savings).toLocaleString(undefined, {maximumFractionDigits: 2})}!`}
+                  </div>
+                )}
+              </div>
+
+              {/* Vendor Cards Stack */}
+              <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
+                {bundleVendors && Object.entries(bundleVendors).map(([key, vendor]: [string, any]) => {
+                  const themeColor = key === 'design' ? 'var(--color-accent)' : key === 'development' ? 'var(--color-buyer)' : 'var(--color-database)';
+                  const themeBorder = key === 'design' ? 'var(--color-accent-border)' : key === 'development' ? 'var(--color-buyer-border)' : 'var(--color-database-border)';
+                  
+                  return (
+                    <div 
+                      key={key} 
+                      className="card" 
+                      style={{
+                        padding: '16px', 
+                        borderColor: vendor.status === 'signed' ? 'var(--color-seller-border)' : themeBorder,
+                        background: vendor.status === 'signed' ? 'rgba(16, 185, 129, 0.02)' : 'var(--bg-secondary)',
+                        transition: 'all 0.3s ease'
+                      }}
+                    >
+                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px'}}>
+                        <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+                          <div style={{width: '8px', height: '8px', borderRadius: '50%', background: themeColor}} />
+                          <span style={{fontWeight: 700, fontSize: '14px', textTransform: 'capitalize'}}>{key} Vendor</span>
+                        </div>
+                        {getStatusBadge(vendor.status)}
+                      </div>
+
+                      <div style={{fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px'}}>
+                        <strong>Agent:</strong> {vendor.name} <span style={{color: 'var(--text-muted)'}}>({vendor.item})</span>
+                      </div>
+
+                      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px', fontSize: '12px', background: 'rgba(0,0,0,0.1)', padding: '10px', borderRadius: 'var(--radius-sm)'}}>
+                        <div>
+                          <span style={{color: 'var(--text-muted)'}}>Max Budget Limit:</span>
+                          <div style={{fontWeight: 600, color: 'var(--text-primary)', marginTop: '2px', fontSize: '13px'}}>${vendor.max_budget.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
+                        </div>
+                        <div>
+                          <span style={{color: 'var(--text-muted)'}}>Current/Final Price:</span>
+                          <div style={{fontWeight: 700, color: vendor.status === 'signed' ? 'var(--color-seller)' : 'var(--text-primary)', marginTop: '2px', fontSize: '13px'}}>
+                            {vendor.current_price ? `$${vendor.current_price.toLocaleString(undefined, {maximumFractionDigits: 2})}` : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <span style={{color: 'var(--text-muted)'}}>Target Price:</span>
+                          <div style={{fontWeight: 500, color: 'var(--text-secondary)', marginTop: '2px'}}>${vendor.target_price.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
+                        </div>
+                        <div>
+                          <span style={{color: 'var(--text-muted)'}}>Negotiation Rounds:</span>
+                          <div style={{fontWeight: 500, color: 'var(--text-secondary)', marginTop: '2px'}}>{vendor.rounds} / 10</div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {!bundleVendors && (
+                  <div className="card" style={{padding: '24px', textAlign: 'center', color: 'var(--text-muted)', borderStyle: 'dashed'}}>
+                    Start the simulation to initialize vendor allocations.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Column - Chat Stream */}
+            <div className="card" style={{display: 'flex', flexDirection: 'column', height: 'calc(100vh - 140px)', minHeight: '600px', padding: 0}}>
+              {/* Stream Header */}
+              <div style={{padding: '16px 20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(0,0,0,0.1)'}}>
+                <div style={{fontWeight: 700, fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px'}}>
+                  <Layers size={16} />
+                  Coordinated 3-Way Bundle Negotiation Stream
+                </div>
+                {isBundleStreaming && (
+                  <div style={{display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--color-accent)'}}>
+                    <Loader className="spinner" size={12} />
+                    <span>Real-time Coordinator Running</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Scrollable Messages Area */}
+              <div style={{flexGrow: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px'}}>
+                {bundleMessages.length === 0 ? (
+                  <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)', textAlign: 'center'}}>
+                    <Layers size={48} style={{opacity: 0.15, marginBottom: '16px'}} />
+                    <p style={{fontWeight: 600}}>Coordinated Bundle Sourcing Simulator</p>
+                    <p style={{fontSize: '12px', marginTop: '4px', maxWidth: '360px', color: 'var(--text-muted)'}}>
+                      This engine runs three vendor negotiations sequentially, auto-calculates surpluses dynamically, and reallocates savings to scale up budget limits.
+                    </p>
+                  </div>
+                ) : (
+                  bundleMessages.map((msg, index) => {
+                    const isSystem = msg.role === 'system';
+                    const isBuyer = msg.role === 'buyer';
+                    
+                    // Determine vendor colors
+                    let messageTheme = 'system';
+                    let vendorNameLabel = msg.sender;
+                    
+                    if (msg.vendor === 'design') {
+                      messageTheme = isBuyer ? 'buyer' : isSystem ? 'system' : 'seller';
+                      vendorNameLabel = isBuyer ? 'Buyer (UI/UX)' : msg.sender;
+                    } else if (msg.vendor === 'development') {
+                      messageTheme = isBuyer ? 'buyer' : isSystem ? 'system' : 'seller';
+                      vendorNameLabel = isBuyer ? 'Buyer (API Dev)' : msg.sender;
+                    } else if (msg.vendor === 'database') {
+                      messageTheme = isBuyer ? 'buyer' : isSystem ? 'system' : 'seller';
+                      vendorNameLabel = isBuyer ? 'Buyer (Database)' : msg.sender;
+                    }
+
+                    if (isSystem && msg.sender === 'System') {
+                      return (
+                        <div key={index} className="message system">
+                          <div className="msg-bubble" style={{
+                            fontSize: '12.5px',
+                            color: msg.content.includes('SUCCESS') ? 'var(--color-seller)' : msg.content.includes('Savings') ? 'var(--color-accent)' : 'var(--text-secondary)',
+                            fontFamily: 'var(--font-mono)'
+                          }}>
+                            {msg.content}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div 
+                        key={index}
+                        className={`message ${messageTheme} msg-vendor-${msg.vendor || 'system'}`}
+                      >
+                        <div className="msg-header">
+                          <User size={12} />
+                          {vendorNameLabel}
+                        </div>
+                        <div className="msg-bubble">
+                          {msg.content}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+                
+                {bundleError && (
+                  <div className="memory-update-alert" style={{borderColor: 'rgba(239, 68, 68, 0.4)', background: 'var(--color-danger-bg)', color: '#ef4444', margin: '10px 0'}}>
+                    <AlertCircle size={16} />
+                    <span>{bundleError}</span>
+                  </div>
+                )}
+                
+                <div ref={chatBottomRef} />
+              </div>
+
+              {/* Bottom Sourcing Conclusion Analytics */}
+              {bundleConclusion && (
+                <div style={{
+                  padding: '20px', 
+                  borderTop: '1px solid var(--border-color)', 
+                  background: 'rgba(16, 185, 129, 0.03)',
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  gap: '12px',
+                  borderBottomLeftRadius: 'var(--radius-md)',
+                  borderBottomRightRadius: 'var(--radius-md)'
+                }}>
+                  <div style={{display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-seller)', fontWeight: 700, fontSize: '15px'}}>
+                    <Check size={18} />
+                    Coordinated Sourcing Settle Analysis
+                  </div>
+                  
+                  <div style={{display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px'}}>
+                    <div style={{background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: 'var(--radius-sm)'}}>
+                      <div style={{fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px'}}>Total Spend</div>
+                      <div style={{fontSize: '18px', fontWeight: 800, color: 'var(--text-primary)'}}>${bundleConclusion.total_spent.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
+                    </div>
+                    
+                    <div style={{background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: 'var(--radius-sm)'}}>
+                      <div style={{fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px'}}>Surplus Savings</div>
+                      <div style={{fontSize: '18px', fontWeight: 800, color: bundleConclusion.savings >= 0 ? 'var(--color-seller)' : 'var(--color-danger)'}}>
+                        ${bundleConclusion.savings.toLocaleString(undefined, {maximumFractionDigits: 2})}
+                      </div>
+                    </div>
+
+                    <div style={{background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: 'var(--radius-sm)'}}>
+                      <div style={{fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px'}}>Contracts Signed</div>
+                      <div style={{fontSize: '18px', fontWeight: 800, color: 'var(--color-buyer)'}}>{bundleConclusion.signed_count} / 3</div>
+                    </div>
+
+                    <div style={{background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: 'var(--radius-sm)'}}>
+                      <div style={{fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px'}}>Simulation Outcome</div>
+                      <div style={{fontSize: '14px', fontWeight: 700, color: bundleConclusion.status === 'success' ? 'var(--color-seller)' : 'var(--text-primary)', marginTop: '4px', textTransform: 'uppercase'}}>{bundleConclusion.status}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
         )}
       </main>
     </div>

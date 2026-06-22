@@ -665,3 +665,34 @@
   align-items: center;
   gap: 10px;
 }
+
+/* Database Vendor Theme Colors and Custom Message Bubble Styles for Bundle Sourcing */
+:root {
+  --color-database: #f97316;
+  --color-database-bg: rgba(249, 115, 22, 0.08);
+  --color-database-border: rgba(249, 115, 22, 0.3);
+}
+
+.msg-vendor-design.seller .msg-header {
+  color: var(--color-accent) !important;
+}
+.msg-vendor-design.seller .msg-bubble {
+  background-color: var(--color-accent-bg) !important;
+  border: 1px solid var(--color-accent-border) !important;
+}
+
+.msg-vendor-development.seller .msg-header {
+  color: var(--color-buyer) !important;
+}
+.msg-vendor-development.seller .msg-bubble {
+  background-color: var(--color-buyer-bg) !important;
+  border: 1px solid var(--color-buyer-border) !important;
+}
+
+.msg-vendor-database.seller .msg-header {
+  color: var(--color-database) !important;
+}
+.msg-vendor-database.seller .msg-bubble {
+  background-color: var(--color-database-bg) !important;
+  border: 1px solid var(--color-database-border) !important;
+}

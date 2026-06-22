@@ -34,6 +34,7 @@ fi
 # 3. Start Python API Backend
 echo -e "\033[1;34m[3/3] Starting FastAPI negotiation backend...\033[0m"
 export PYTHONPATH=.
+export AWS_REGION=us-east-1
 .venv/bin/python src/morekick/server.py &
 BACKEND_PID=$!
 

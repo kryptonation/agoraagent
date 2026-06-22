@@ -247,6 +247,172 @@ def submit_action(thread_id: str, req: ActionRequest):
     
     return {"status": "resuming"}
 
+class ShadowPlayRequest(BaseModel):
+    item_name: str = "Custom API Integration"
+    buyer_max: float = 1500.0
+    buyer_target: float = 1100.0
+    seller_min: float = 900.0
+    seller_target: float = 1300.0
+    iterations: int = 6
+
+async def run_shadow_iteration(req: ShadowPlayRequest, iteration_index: int):
+    thread_id = f"shadow_{uuid.uuid4().hex[:8]}_iter_{iteration_index}"
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "max_budget": req.buyer_max,
+            "buyer_target_price": req.buyer_target,
+            "min_price": req.seller_min,
+            "seller_target_price": req.seller_target
+        }
+    }
+    
+    state_input = {
+        "messages": [],
+        "buyer_id": "BuyerAgent",
+        "seller_id": "SellerAgent",
+        "item_name": req.item_name,
+        "current_price": None,
+        "current_terms": None,
+        "last_proposed_by": None,
+        "rounds": 0,
+        "status": "active",
+        "agreement_draft": None,
+        "buyer_feedback": None,
+        "seller_feedback": None
+    }
+    
+    try:
+        # Run standard graph stream to completion of initial turn
+        async for event in compiled_graph.astream(state_input, config=config, stream_mode="values"):
+            pass
+            
+        state_info = compiled_graph.get_state(config)
+        
+        # Loop to automatically resolve human checkpoints
+        while "await_signatures" in state_info.next:
+            compiled_graph.update_state(
+                config,
+                {
+                    "buyer_feedback": "APPROVED",
+                    "seller_feedback": "APPROVED"
+                },
+                as_node="await_signatures"
+            )
+            async for event in compiled_graph.astream(None, config=config, stream_mode="values"):
+                pass
+            state_info = compiled_graph.get_state(config)
+            
+        final_values = state_info.values
+        return {
+            "status": final_values.get("status", "aborted"),
+            "final_price": final_values.get("current_price", 0.0),
+            "rounds": final_values.get("rounds", 0)
+        }
+    except Exception as e:
+        logger.error(f"Error in shadow play iteration {iteration_index}: {e}")
+        return {
+            "status": "failed",
+            "final_price": 0.0,
+            "rounds": 0,
+            "error": str(e)
+        }
+
+@app.post("/api/negotiate/shadow-play")
+async def run_shadow_play(req: ShadowPlayRequest):
+    iterations = min(max(req.iterations, 1), 15)  # Cap between 1 and 15 runs
+    
+    # Run iterations in parallel with a semaphore limit of 2 to protect Bedrock quotas
+    sem = asyncio.Semaphore(2)
+    
+    async def run_with_sem(idx):
+        async with sem:
+            return await run_shadow_iteration(req, idx)
+            
+    tasks = [run_with_sem(i) for i in range(iterations)]
+    results = await asyncio.gather(*tasks)
+    
+    # Compile statistics
+    success_count = sum(1 for r in results if r["status"] == "signed")
+    aborted_count = sum(1 for r in results if r["status"] == "aborted")
+    failed_count = sum(1 for r in results if r["status"] == "failed")
+    
+    success_rate = (success_count / iterations) * 100 if iterations > 0 else 0.0
+    
+    signed_prices = [r["final_price"] for r in results if r["status"] == "signed"]
+    
+    avg_price = sum(signed_prices) / len(signed_prices) if signed_prices else 0.0
+    min_price = min(signed_prices) if signed_prices else 0.0
+    max_price = max(signed_prices) if signed_prices else 0.0
+    
+    # Calculate price distribution buckets (5 bins)
+    price_min_bound = req.seller_min
+    price_max_bound = req.buyer_max
+    price_range = price_max_bound - price_min_bound
+    
+    distribution = []
+    if price_range > 0:
+        bin_width = price_range / 5
+        bins = [price_min_bound + i * bin_width for i in range(6)]
+        
+        for i in range(5):
+            lower = bins[i]
+            upper = bins[i+1]
+            count = sum(1 for p in signed_prices if lower <= p < upper or (i == 4 and p == upper))
+            distribution.append({
+                "label": f"${lower:.0f} - ${upper:.0f}",
+                "count": count
+            })
+    else:
+        distribution = [{"label": f"${price_min_bound:.0f}", "count": len(signed_prices)}]
+        
+    # Generate LLM advice
+    buyer_mem = get_agent_profile("SellerAgent") # Buyer's memory on Seller
+    seller_mem = get_agent_profile("BuyerAgent") # Seller's memory on Buyer
+    
+    advice = "Unable to compile recommendations due to lack of successful simulations."
+    if success_count > 0:
+        try:
+            llm = get_bedrock_llm(temperature=0.3)
+            summary_prompt = f"""You are a Game Theory Strategy Advisor.
+We ran {iterations} simulated negotiations between BuyerAgent and SellerAgent for '{req.item_name}'.
+Constraints:
+- Buyer target: ${req.buyer_target:.2f}, max budget: ${req.buyer_max:.2f}
+- Seller target: ${req.seller_target:.2f}, min price: ${req.seller_min:.2f}
+
+Simulation results:
+- Total runs: {iterations}
+- Signed agreements: {success_count} ({success_rate:.1f}% success rate)
+- Aborted runs: {aborted_count}
+- Executed prices: Avg: ${avg_price:.2f}, Min: ${min_price:.2f}, Max: ${max_price:.2f}
+
+Counterparty profile memory notes:
+- Memory on Seller: {buyer_mem}
+- Memory on Buyer: {seller_mem}
+
+Provide a highly strategic 3-sentence negotiation advice for the human user.
+Explain if the current target bounds are optimal, whether the counterparty is flexible, and what starting offer or target adjustments they should make to maximize their utility.
+Return ONLY raw plain text. Do not include markdown wraps.
+"""
+            raw_res = await asyncio.to_thread(lambda: llm.invoke(summary_prompt).content)
+            advice = raw_res.strip()
+        except Exception as e:
+            logger.error(f"Error compiling shadow play advice: {e}")
+            advice = f"Simulation complete. Average deal value settled at ${avg_price:.2f} with a {success_rate:.1f}% success rate. Bedrock consultation failed."
+
+    return {
+        "success_rate": success_rate,
+        "success_count": success_count,
+        "aborted_count": aborted_count,
+        "failed_count": failed_count,
+        "avg_price": avg_price,
+        "min_price": min_price,
+        "max_price": max_price,
+        "distribution": distribution,
+        "advice": advice,
+        "raw_results": results
+    }
+
 @app.get("/api/history")
 def get_history():
     conn = sqlite3.connect(DB_PATH)
@@ -273,6 +439,14 @@ def get_profiles():
 def update_profile(agent_id: str, notes: str = Body(..., embed=True)):
     update_agent_profile(agent_id, notes)
     return {"status": "updated", "agent_id": agent_id, "notes": get_agent_profile(agent_id)}
+
+@app.get("/api/negotiate/bundle/stream/{total_budget}")
+async def stream_bundle_negotiation(total_budget: float):
+    from src.morekick.bundle_sourcing import run_bundle_sourcing_session
+    return StreamingResponse(
+        run_bundle_sourcing_session(total_budget),
+        media_type="text/event-stream"
+    )
 
 # Check if frontend build directory exists to serve static files
 frontend_dist_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
