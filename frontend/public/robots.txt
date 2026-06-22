@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://at24emesxq.ap-south-1.awsapprunner.com/sitemap.xml

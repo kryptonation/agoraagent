@@ -472,6 +472,13 @@ if os.path.exists(frontend_dist_path):
     async def serve_frontend(catchall: str):
         if catchall.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
+        
+        # Try serving matching files directly if they exist in dist (e.g. favicon, robots.txt, og-banner)
+        if catchall:
+            file_path = os.path.join(frontend_dist_path, catchall)
+            if os.path.exists(file_path) and os.path.isfile(file_path):
+                return FileResponse(file_path)
+                
         index_file = os.path.join(frontend_dist_path, "index.html")
         if os.path.exists(index_file):
             return FileResponse(index_file)
