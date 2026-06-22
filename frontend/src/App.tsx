@@ -12,7 +12,8 @@ import {
   Loader,
   RefreshCw,
   Edit2,
-  Layers
+  Layers,
+  Users
 } from 'lucide-react';
 import './App.css';
 
@@ -29,6 +30,10 @@ interface Checkpoint {
   last_proposed_by: string | null;
   status: string;
   agreement_draft: string | null;
+  buyer_archetype?: string | null;
+  buyer_strategy?: string | null;
+  seller_archetype?: string | null;
+  seller_strategy?: string | null;
 }
 
 interface HistoryItem {
@@ -49,8 +54,8 @@ interface ProfileItem {
 }
 
 export default function App() {
-  // Navigation tabs: 'simulation' | 'history' | 'profiles' | 'shadow' | 'bundle'
-  const [activeTab, setActiveTab] = useState<'simulation' | 'history' | 'profiles' | 'shadow' | 'bundle'>('simulation');
+  // Navigation tabs: 'simulation' | 'history' | 'profiles' | 'shadow' | 'bundle' | 'coalition'
+  const [activeTab, setActiveTab] = useState<'simulation' | 'history' | 'profiles' | 'shadow' | 'bundle' | 'coalition'>('simulation');
 
   // Bundle Sourcing state
   const [bundleBudget, setBundleBudget] = useState(5000);
@@ -60,6 +65,16 @@ export default function App() {
   const [bundleTotalSpent, setBundleTotalSpent] = useState(0);
   const [bundleConclusion, setBundleConclusion] = useState<any>(null);
   const [bundleError, setBundleError] = useState<string | null>(null);
+
+  // Coalition Sourcing state
+  const [coalitionVolume, setCoalitionVolume] = useState(60);
+  const [isCoalitionStreaming, setIsCoalitionStreaming] = useState(false);
+  const [coalitionMessages, setCoalitionMessages] = useState<any[]>([]);
+  const [coalitionBuyers, setCoalitionBuyers] = useState<any>(null);
+  const [coalitionPrice, setCoalitionPrice] = useState(0);
+  const [coalitionRounds, setCoalitionRounds] = useState(0);
+  const [coalitionConclusion, setCoalitionConclusion] = useState<any>(null);
+  const [coalitionError, setCoalitionError] = useState<string | null>(null);
 
   // Shadow Play state
   const [shadowIterations, setShadowIterations] = useState(6);
@@ -122,7 +137,7 @@ export default function App() {
     if (chatBottomRef.current) {
       chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, bundleMessages, isStreaming, isBreakpoint, isBundleStreaming]);
+  }, [messages, bundleMessages, coalitionMessages, isStreaming, isBreakpoint, isBundleStreaming, isCoalitionStreaming]);
 
   // Clean up EventSource on unmount
   useEffect(() => {
@@ -425,6 +440,59 @@ export default function App() {
     });
   };
 
+  const startCoalitionSourcing = () => {
+    setCoalitionError(null);
+    setCoalitionConclusion(null);
+    setCoalitionMessages([]);
+    setCoalitionPrice(0);
+    setCoalitionRounds(0);
+    setCoalitionBuyers(null);
+    setIsCoalitionStreaming(true);
+
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const es = new EventSource(`/api/negotiate/coalition/stream/${coalitionVolume}`);
+    eventSourceRef.current = es;
+
+    es.addEventListener('coalition_start', (e) => {
+      const data = JSON.parse(e.data);
+      setCoalitionBuyers(data.buyers);
+    });
+
+    es.addEventListener('coalition_message', (e) => {
+      const data = JSON.parse(e.data);
+      setCoalitionMessages(prev => [...prev, data]);
+    });
+
+    es.addEventListener('coalition_checkpoint', (e) => {
+      const data = JSON.parse(e.data);
+      setCoalitionBuyers(data.buyers);
+      if (data.coalition_price) setCoalitionPrice(data.coalition_price);
+      if (data.coalition_rounds) setCoalitionRounds(data.coalition_rounds);
+    });
+
+    es.addEventListener('coalition_concluded', (e) => {
+      const data = JSON.parse(e.data);
+      setCoalitionBuyers(data.buyers);
+      setCoalitionConclusion(data.conclusion);
+      setIsCoalitionStreaming(false);
+      es.close();
+      
+      // Refresh DB summaries
+      fetchHistory();
+      fetchProfiles();
+    });
+
+    es.addEventListener('error', (e) => {
+      console.error("Coalition stream error", e);
+      setCoalitionError("Negotiation connection lost or completed.");
+      setIsCoalitionStreaming(false);
+      es.close();
+    });
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status.toLowerCase()) {
       case 'active':
@@ -467,6 +535,13 @@ export default function App() {
           >
             <Layers size={16} />
             Bundle Sourcing
+          </button>
+          <button 
+            className={`tab-btn ${activeTab === 'coalition' ? 'active' : ''}`}
+            onClick={() => setActiveTab('coalition')}
+          >
+            <Users size={16} />
+            Coalition Sourcing
           </button>
           <button 
             className={`tab-btn ${activeTab === 'shadow' ? 'active' : ''}`}
@@ -638,6 +713,24 @@ export default function App() {
                     <label>Seller Agent's Memory on BuyerAgent</label>
                     <div className="memory-box">{sellerMemoryContext}</div>
                   </div>
+
+                  {checkpoint && (checkpoint.buyer_archetype || checkpoint.seller_archetype) && (
+                    <div style={{marginTop: '16px', borderTop: '1px solid var(--border-color)', paddingTop: '16px', display: 'flex', flexDirection: 'column', gap: '12px'}}>
+                      <label style={{fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase'}}>Live Archetype Classification</label>
+                      {checkpoint.seller_archetype && (
+                        <div style={{background: 'rgba(139, 92, 246, 0.03)', border: '1px solid var(--color-accent-border)', padding: '10px', borderRadius: 'var(--radius-sm)'}}>
+                          <div style={{fontSize: '12px', fontWeight: 700, color: 'var(--color-accent)'}}>Seller: {checkpoint.seller_archetype}</div>
+                          <div style={{fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px'}}><strong>Guidance:</strong> {checkpoint.seller_strategy}</div>
+                        </div>
+                      )}
+                      {checkpoint.buyer_archetype && (
+                        <div style={{background: 'rgba(59, 130, 246, 0.03)', border: '1px solid var(--color-buyer-border)', padding: '10px', borderRadius: 'var(--radius-sm)'}}>
+                          <div style={{fontSize: '12px', fontWeight: 700, color: 'var(--color-buyer)'}}>Buyer: {checkpoint.buyer_archetype}</div>
+                          <div style={{fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px'}}><strong>Guidance:</strong> {checkpoint.buyer_strategy}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1459,6 +1552,317 @@ export default function App() {
                     <div style={{background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: 'var(--radius-sm)'}}>
                       <div style={{fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px'}}>Simulation Outcome</div>
                       <div style={{fontSize: '14px', fontWeight: 700, color: bundleConclusion.status === 'success' ? 'var(--color-seller)' : 'var(--text-primary)', marginTop: '4px', textTransform: 'uppercase'}}>{bundleConclusion.status}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {activeTab === 'coalition' && (
+          <>
+            {/* Left Column - Configuration & Coalition Info */}
+            <div className="panel">
+              {/* Configuration Card */}
+              <div className="card">
+                <div className="card-title">
+                  <Users size={16} />
+                  Coalition Configurator
+                </div>
+                <div className="form-grid">
+                  <div className="input-group">
+                    <label htmlFor="coalition-volume">Cooperative Bulk Demand (Units)</label>
+                    <select
+                      id="coalition-volume"
+                      value={coalitionVolume}
+                      onChange={(e) => setCoalitionVolume(Number(e.target.value))}
+                      disabled={isCoalitionStreaming}
+                      style={{
+                        backgroundColor: 'var(--bg-primary)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '10px 12px',
+                        fontSize: '14px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <option value={30}>30 Units (A: 5, B: 10, C: 15)</option>
+                      <option value={60}>60 Units (A: 10, B: 20, C: 30)</option>
+                      <option value={90}>90 Units (A: 15, B: 30, C: 45)</option>
+                    </select>
+                  </div>
+                  
+                  <button 
+                    className="btn btn-primary"
+                    onClick={startCoalitionSourcing}
+                    disabled={isCoalitionStreaming}
+                    style={{marginTop: '8px'}}
+                  >
+                    {isCoalitionStreaming ? (
+                      <>
+                        <Loader className="spinner" size={16} />
+                        Simulating Coalition...
+                      </>
+                    ) : (
+                      <>
+                        <Play size={16} />
+                        Run Coalition Sourcing
+                      </>
+                    )}
+                  </button>
+
+                  {isCoalitionStreaming && coalitionPrice > 0 && (
+                    <div style={{fontSize: '12px', color: 'var(--text-secondary)', marginTop: '10px', textAlign: 'center'}}>
+                      Active Settle Price: <strong>${coalitionPrice.toLocaleString()}</strong> (Round {coalitionRounds} / 10)
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Characteristic Savings v(S) Card */}
+              <div className="card" style={{background: 'rgba(0,0,0,0.15)'}}>
+                <div className="card-title" style={{border: 'none', padding: 0, marginBottom: '12px', fontSize: '13px'}}>
+                  Characteristic Savings Function v(S)
+                </div>
+                <div style={{display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px', fontFamily: 'var(--font-mono)'}}>
+                  <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '4px'}}>
+                    <span style={{color: 'var(--text-secondary)'}}>v(A) [10 units]</span>
+                    <span style={{fontWeight: 600, color: 'var(--text-muted)'}}>$0.00</span>
+                  </div>
+                  <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '4px'}}>
+                    <span style={{color: 'var(--text-secondary)'}}>v(B) [20 units]</span>
+                    <span style={{fontWeight: 600, color: 'var(--text-muted)'}}>$0.00</span>
+                  </div>
+                  <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '4px'}}>
+                    <span style={{color: 'var(--text-secondary)'}}>v(C) [30 units]</span>
+                    <span style={{fontWeight: 600, color: 'var(--text-muted)'}}>$0.00</span>
+                  </div>
+                  <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '4px'}}>
+                    <span style={{color: 'var(--color-accent)'}}>v(AB) [30 units]</span>
+                    <span style={{fontWeight: 700, color: 'var(--text-primary)'}}>
+                      {coalitionConclusion ? `$${coalitionConclusion.value_function.v_AB.toFixed(2)}` : '—'}
+                    </span>
+                  </div>
+                  <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '4px'}}>
+                    <span style={{color: 'var(--color-buyer)'}}>v(AC) [40 units]</span>
+                    <span style={{fontWeight: 700, color: 'var(--text-primary)'}}>
+                      {coalitionConclusion ? `$${coalitionConclusion.value_function.v_AC.toFixed(2)}` : '—'}
+                    </span>
+                  </div>
+                  <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '4px'}}>
+                    <span style={{color: 'var(--color-database)'}}>v(BC) [50 units]</span>
+                    <span style={{fontWeight: 700, color: 'var(--text-primary)'}}>
+                      {coalitionConclusion ? `$${coalitionConclusion.value_function.v_BC.toFixed(2)}` : '—'}
+                    </span>
+                  </div>
+                  <div style={{display: 'flex', justifyContent: 'space-between', paddingTop: '4px'}}>
+                    <span style={{color: 'var(--color-seller)', fontWeight: 700}}>v(ABC) [60 units]</span>
+                    <span style={{fontWeight: 800, color: 'var(--color-seller)'}}>
+                      {coalitionConclusion ? `$${coalitionConclusion.value_function.v_ABC.toFixed(2)}` : '—'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Coalition Buyers Allocation Card */}
+              <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
+                {coalitionBuyers && Object.entries(coalitionBuyers).map(([key, buyer]: [string, any]) => {
+                  const themeColor = key === 'A' ? 'var(--color-accent)' : key === 'B' ? 'var(--color-buyer)' : 'var(--color-database)';
+                  const themeBorder = key === 'A' ? 'var(--color-accent-border)' : key === 'B' ? 'var(--color-buyer-border)' : 'var(--color-database-border)';
+                  
+                  return (
+                    <div 
+                      key={key} 
+                      className="card" 
+                      style={{
+                        padding: '16px', 
+                        borderColor: buyer.status === 'signed' ? 'var(--color-seller-border)' : themeBorder,
+                        background: buyer.status === 'signed' ? 'rgba(16, 185, 129, 0.02)' : 'var(--bg-secondary)',
+                        transition: 'all 0.3s ease'
+                      }}
+                    >
+                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px'}}>
+                        <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+                          <div style={{width: '8px', height: '8px', borderRadius: '50%', background: themeColor}} />
+                          <span style={{fontWeight: 700, fontSize: '14px'}}>{buyer.name} ({buyer.units} units)</span>
+                        </div>
+                        {getStatusBadge(buyer.status)}
+                      </div>
+
+                      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px', fontSize: '12px', background: 'rgba(0,0,0,0.1)', padding: '10px', borderRadius: 'var(--radius-sm)'}}>
+                        <div>
+                          <span style={{color: 'var(--text-muted)'}}>Standalone Price:</span>
+                          <div style={{fontWeight: 600, color: 'var(--text-primary)', marginTop: '2px', fontSize: '13px'}}>
+                            {buyer.standalone_price > 0 ? `$${buyer.standalone_price.toLocaleString(undefined, {maximumFractionDigits: 2})}` : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <span style={{color: 'var(--text-muted)'}}>Fair Allocated Cost:</span>
+                          <div style={{fontWeight: 700, color: buyer.allocated_price ? 'var(--color-seller)' : 'var(--text-primary)', marginTop: '2px', fontSize: '13px'}}>
+                            {buyer.allocated_price ? `$${buyer.allocated_price.toLocaleString(undefined, {maximumFractionDigits: 2})}` : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <span style={{color: 'var(--text-muted)'}}>Max Standalone Budget:</span>
+                          <div style={{fontWeight: 500, color: 'var(--text-secondary)', marginTop: '2px'}}>${buyer.max_budget.toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <span style={{color: 'var(--text-muted)'}}>Shapley Savings Reward:</span>
+                          <div style={{fontWeight: 700, color: 'var(--color-accent)', marginTop: '2px', fontSize: '13px'}}>
+                            {buyer.savings ? `$${buyer.savings.toLocaleString(undefined, {maximumFractionDigits: 2})}` : '—'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {!coalitionBuyers && (
+                  <div className="card" style={{padding: '24px', textAlign: 'center', color: 'var(--text-muted)', borderStyle: 'dashed'}}>
+                    Start the simulation to initialize buyer volume distributions.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Column - Chat Stream */}
+            <div className="card" style={{display: 'flex', flexDirection: 'column', height: 'calc(100vh - 140px)', minHeight: '600px', padding: 0}}>
+              {/* Stream Header */}
+              <div style={{padding: '16px 20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(0,0,0,0.1)'}}>
+                <div style={{fontWeight: 700, fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px'}}>
+                  <Users size={16} />
+                  Cooperative Sourcing & Coalition Settle Log
+                </div>
+                {isCoalitionStreaming && (
+                  <div style={{display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--color-accent)'}}>
+                    <Loader className="spinner" size={12} />
+                    <span>Evaluating Game Permutations...</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Scrollable Messages Area */}
+              <div style={{flexGrow: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px'}}>
+                {coalitionMessages.length === 0 ? (
+                  <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)', textAlign: 'center'}}>
+                    <Users size={48} style={{opacity: 0.15, marginBottom: '16px'}} />
+                    <p style={{fontWeight: 600}}>Cooperative Coalition Sourcing Simulator</p>
+                    <p style={{fontSize: '12px', marginTop: '4px', maxWidth: '360px', color: 'var(--text-muted)'}}>
+                      This engine runs three standalone negotiations, pools their volumes to negotiate a bulk rate, and reallocates the aggregate savings fairly using Shapley values.
+                    </p>
+                  </div>
+                ) : (
+                  coalitionMessages.map((msg, index) => {
+                    const isSystem = msg.role === 'system';
+                    const isBuyer = msg.role === 'buyer';
+                    
+                    let messageTheme = 'system';
+                    let label = msg.sender;
+                    
+                    if (msg.phase === 'standalone') {
+                      if (msg.buyer_key === 'A') {
+                        messageTheme = isBuyer ? 'buyer' : isSystem ? 'system' : 'seller';
+                        label = isBuyer ? 'Buyer A' : msg.sender;
+                      } else if (msg.buyer_key === 'B') {
+                        messageTheme = isBuyer ? 'buyer' : isSystem ? 'system' : 'seller';
+                        label = isBuyer ? 'Buyer B' : msg.sender;
+                      } else if (msg.buyer_key === 'C') {
+                        messageTheme = isBuyer ? 'buyer' : isSystem ? 'system' : 'seller';
+                        label = isBuyer ? 'Buyer C' : msg.sender;
+                      }
+                    } else if (msg.phase === 'coalition') {
+                      messageTheme = isBuyer ? 'buyer' : isSystem ? 'system' : 'seller';
+                      label = isBuyer ? 'Buyer Coalition' : msg.sender;
+                    }
+
+                    if (isSystem && msg.sender === 'System') {
+                      return (
+                        <div key={index} className="message system">
+                          <div className="msg-bubble" style={{
+                            fontSize: '12.5px',
+                            color: msg.content.includes('finalized') ? 'var(--color-seller)' : msg.content.includes('Grand') ? 'var(--color-accent)' : 'var(--text-secondary)',
+                            fontFamily: 'var(--font-mono)'
+                          }}>
+                            {msg.content}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Define helper classes in CSS to color-code
+                    let coalitionVendorClass = '';
+                    if (msg.phase === 'standalone') {
+                      if (msg.buyer_key === 'A') coalitionVendorClass = 'msg-vendor-design'; // Purple
+                      else if (msg.buyer_key === 'B') coalitionVendorClass = 'msg-vendor-development'; // Blue
+                      else if (msg.buyer_key === 'C') coalitionVendorClass = 'msg-vendor-database'; // Orange
+                    } else if (msg.phase === 'coalition') {
+                      coalitionVendorClass = 'msg-vendor-development'; // Blue
+                    }
+
+                    return (
+                      <div 
+                        key={index}
+                        className={`message ${messageTheme} ${coalitionVendorClass}`}
+                      >
+                        <div className="msg-header">
+                          <User size={12} />
+                          {label}
+                        </div>
+                        <div className="msg-bubble">
+                          {msg.content}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+                
+                {coalitionError && (
+                  <div className="memory-update-alert" style={{borderColor: 'rgba(239, 68, 68, 0.4)', background: 'var(--color-danger-bg)', color: '#ef4444', margin: '10px 0'}}>
+                    <AlertCircle size={16} />
+                    <span>{coalitionError}</span>
+                  </div>
+                )}
+                
+                <div ref={chatBottomRef} />
+              </div>
+
+              {/* Bottom Sourcing Conclusion Analytics */}
+              {coalitionConclusion && (
+                <div style={{
+                  padding: '20px', 
+                  borderTop: '1px solid var(--border-color)', 
+                  background: 'rgba(16, 185, 129, 0.03)',
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  gap: '12px',
+                  borderBottomLeftRadius: 'var(--radius-md)',
+                  borderBottomRightRadius: 'var(--radius-md)'
+                }}>
+                  <div style={{display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-seller)', fontWeight: 700, fontSize: '15px'}}>
+                    <Check size={18} />
+                    Shapley Value Cost Allocations & Savings Analysis
+                  </div>
+                  
+                  <div style={{display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px'}}>
+                    <div style={{background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: 'var(--radius-sm)'}}>
+                      <div style={{fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px'}}>Standalone Sum</div>
+                      <div style={{fontSize: '18px', fontWeight: 800, color: 'var(--text-primary)'}}>${coalitionConclusion.standalone_sum.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
+                    </div>
+                    
+                    <div style={{background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: 'var(--radius-sm)'}}>
+                      <div style={{fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px'}}>Coalition Settle Price</div>
+                      <div style={{fontSize: '18px', fontWeight: 800, color: 'var(--color-buyer)'}}>${coalitionConclusion.coalition_price.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
+                    </div>
+
+                    <div style={{background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: 'var(--radius-sm)'}}>
+                      <div style={{fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px'}}>Grand Total Savings</div>
+                      <div style={{fontSize: '18px', fontWeight: 800, color: 'var(--color-seller)'}}>${coalitionConclusion.total_savings.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
+                    </div>
+
+                    <div style={{background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: 'var(--radius-sm)'}}>
+                      <div style={{fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px'}}>Settle Status</div>
+                      <div style={{fontSize: '14px', fontWeight: 700, color: coalitionConclusion.status === 'signed' ? 'var(--color-seller)' : 'var(--text-primary)', marginTop: '4px', textTransform: 'uppercase'}}>{coalitionConclusion.status}</div>
                     </div>
                   </div>
                 </div>

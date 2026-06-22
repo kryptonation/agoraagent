@@ -36,3 +36,9 @@ class NegotiationState(TypedDict):
     # Human feedbacks
     buyer_feedback: Optional[str]
     seller_feedback: Optional[str]
+
+    # Archetype classification features
+    buyer_archetype: Optional[str]
+    buyer_strategy: Optional[str]
+    seller_archetype: Optional[str]
+    seller_strategy: Optional[str]

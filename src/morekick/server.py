@@ -149,7 +149,11 @@ async def generate_negotiation_events(thread_id: str):
                 "current_terms": final_state.get("current_terms"),
                 "last_proposed_by": final_state.get("last_proposed_by"),
                 "status": final_state.get("status", "active"),
-                "agreement_draft": final_state.get("agreement_draft")
+                "agreement_draft": final_state.get("agreement_draft"),
+                "buyer_archetype": final_state.get("buyer_archetype"),
+                "buyer_strategy": final_state.get("buyer_strategy"),
+                "seller_archetype": final_state.get("seller_archetype"),
+                "seller_strategy": final_state.get("seller_strategy")
             }
             yield f"event: checkpoint\ndata: {json.dumps(checkpoint_data)}\n\n"
             
@@ -445,6 +449,14 @@ async def stream_bundle_negotiation(total_budget: float):
     from src.morekick.bundle_sourcing import run_bundle_sourcing_session
     return StreamingResponse(
         run_bundle_sourcing_session(total_budget),
+        media_type="text/event-stream"
+    )
+
+@app.get("/api/negotiate/coalition/stream/{total_volume}")
+async def stream_coalition_negotiation(total_volume: int):
+    from src.morekick.coalition import run_coalition_sourcing_session
+    return StreamingResponse(
+        run_coalition_sourcing_session(total_volume),
         media_type="text/event-stream"
     )
 

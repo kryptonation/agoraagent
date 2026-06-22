@@ -3,6 +3,45 @@ from langchain_core.runnables import RunnableConfig
 from src.morekick.config import get_bedrock_llm
 from src.morekick.state import NegotiationState, NegotiationOffer
 from src.morekick.memory import get_agent_profile
+import json
+
+def classify_counterparty_archetype(messages, target_agent) -> tuple[str, str]:
+    """
+    Classifies target_agent's negotiation style based on message history.
+    Returns: (Archetype, Strategy Recommendation)
+    """
+    agent_msgs = [msg.content for msg in messages if msg.name == target_agent]
+    if not agent_msgs:
+        return "Collaborative/Integrative", "Proceed with standard cooperative bargaining."
+        
+    text_corpus = "\n".join(agent_msgs[-3:]) # Look at last 3 messages to classify current style
+    
+    try:
+        llm = get_bedrock_llm(temperature=0.1)
+        prompt = f"""You are a Negotiation Behavioral Analyst.
+Analyze the following recent messages from '{target_agent}' in a contract negotiation:
+
+{text_corpus}
+
+Classify '{target_agent}' into one of these archetypes:
+1. "Competitive/Aggressive" (Hard bargaining, demands concessions, threatens to walk away)
+2. "Collaborative/Integrative" (Win-win focused, suggests constructive terms, polite and logical)
+3. "Compromising/Conceding" (Ready to settle in the middle, makes compromises quickly)
+4. "Avoidant/Passive" (Reluctant to make concrete offers, delays decisions)
+
+Respond in JSON format with exactly these two keys:
+- 'archetype': The selected archetype label string.
+- 'guidance': A 1-sentence recommendation on how to counter this strategy.
+
+Return ONLY raw JSON, no markdown block formatting.
+"""
+        res = llm.invoke(prompt).content
+        clean_res = res.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_res)
+        return data.get("archetype", "Collaborative/Integrative"), data.get("guidance", "Proceed with standard cooperative bargaining.")
+    except Exception as e:
+        print(f"Error classifying archetype: {e}")
+        return "Collaborative/Integrative", "Proceed with standard cooperative bargaining."
 
 def run_buyer_agent(state: NegotiationState, config: RunnableConfig):
     # Retrieve private configurations from LangGraph runtime config
@@ -15,6 +54,9 @@ def run_buyer_agent(state: NegotiationState, config: RunnableConfig):
     
     # Load opposing agent profile memory
     relationship_notes = get_agent_profile(seller_id)
+    
+    # Classify counterparty (seller) archetype
+    archetype, strategy_guidance = classify_counterparty_archetype(state.get("messages", []), seller_id)
     
     # Check if there is human feedback
     human_feedback_context = ""
@@ -34,6 +76,10 @@ Your private instructions and constraints:
 
 Relationship memory on the seller ({seller_id}):
 {relationship_notes}
+
+Current Negotiation Context:
+- Detected Seller Archetype: {archetype}
+- Counter-Strategy Recommendation: {strategy_guidance}
 {human_feedback_context}
 You are communicating directly with the seller's agent. Keep your messages professional, polite, and persuasive.
 """
@@ -100,7 +146,9 @@ You are communicating directly with the seller's agent. Keep your messages profe
         "rounds": rounds,
         "status": status,
         "agreement_draft": agreement_draft,
-        "buyer_feedback": None # Reset human feedback once consumed
+        "buyer_feedback": None, # Reset human feedback once consumed
+        "seller_archetype": archetype,
+        "seller_strategy": strategy_guidance
     }
 
 
@@ -114,6 +162,9 @@ def run_seller_agent(state: NegotiationState, config: RunnableConfig):
     
     # Load opposing agent profile memory
     relationship_notes = get_agent_profile(buyer_id)
+    
+    # Classify counterparty (buyer) archetype
+    archetype, strategy_guidance = classify_counterparty_archetype(state.get("messages", []), buyer_id)
     
     # Check if there is human feedback
     human_feedback_context = ""
@@ -132,6 +183,10 @@ Your private instructions and constraints:
 
 Relationship memory on the buyer ({buyer_id}):
 {relationship_notes}
+
+Current Negotiation Context:
+- Detected Buyer Archetype: {archetype}
+- Counter-Strategy Recommendation: {strategy_guidance}
 {human_feedback_context}
 You are communicating directly with the buyer's agent. Keep your messages professional, polite, and persuasive.
 """
@@ -189,5 +244,7 @@ You are communicating directly with the buyer's agent. Keep your messages profes
         "rounds": rounds,
         "status": status,
         "agreement_draft": agreement_draft,
-        "seller_feedback": None # Reset human feedback once consumed
+        "seller_feedback": None, # Reset human feedback once consumed
+        "buyer_archetype": archetype,
+        "buyer_strategy": strategy_guidance
     }
