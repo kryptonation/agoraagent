@@ -152,7 +152,8 @@ async def run_coalition_sourcing_session(total_volume: int = 60) -> AsyncGenerat
             buyer["status"] = status
             buyer["standalone_price"] = final_price if status == "signed" else buyer["max_budget"]
             
-            yield f"event: coalition_message\ndata: {json.dumps({'phase': 'standalone', 'buyer_key': key, 'sender': 'System', 'role': 'system', 'content': f'Standalone pricing finalized for {buyer_name} at ${buyer[\"standalone_price\"]:.2f}'})}\n\n"
+            p_final = buyer["standalone_price"]
+            yield f"event: coalition_message\ndata: {json.dumps({'phase': 'standalone', 'buyer_key': key, 'sender': 'System', 'role': 'system', 'content': f'Standalone pricing finalized for {buyer_name} at ${p_final:.2f}'})}\n\n"
             log_negotiation(f"{buyer_name}Agent", "SellerAgent", f"{units} Standalone Units", status, buyer["standalone_price"], buyer["rounds"])
             
         except Exception as e:
@@ -283,12 +284,12 @@ async def run_coalition_sourcing_session(total_volume: int = 60) -> AsyncGenerat
     v_ac = max((p_a + p_c) - 3600.0, 0.0)
     
     # Grand coalition savings
-    v_abc = max(standalone_sum - coalition_price, 0.0) if coalition_status == "signed" else 0.0
+    v_abc = max(standalone_sum - coalition_price, 0.0) if (coalition_status in ["signed", "agreed", "active"] and coalition_price > 0.0) else 0.0
     
     # Solve Shapley values (Fair Savings Allocation)
-    shapley_a = (v_ab + v_ac + 2 * (v_abc - v_bc)) / 6.0 if coalition_status == "signed" else 0.0
-    shapley_b = (v_ab + v_bc + 2 * (v_abc - v_ac)) / 6.0 if coalition_status == "signed" else 0.0
-    shapley_c = (v_ac + v_bc + 2 * (v_abc - v_ab)) / 6.0 if coalition_status == "signed" else 0.0
+    shapley_a = (v_ab + v_ac + 2 * (v_abc - v_bc)) / 6.0 if (coalition_status in ["signed", "agreed", "active"] and coalition_price > 0.0) else 0.0
+    shapley_b = (v_ab + v_bc + 2 * (v_abc - v_ac)) / 6.0 if (coalition_status in ["signed", "agreed", "active"] and coalition_price > 0.0) else 0.0
+    shapley_c = (v_ac + v_bc + 2 * (v_abc - v_ab)) / 6.0 if (coalition_status in ["signed", "agreed", "active"] and coalition_price > 0.0) else 0.0
     
     # Final allocated price to each buyer
     allocated_a = max(p_a - shapley_a, 0.0)
