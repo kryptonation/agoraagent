@@ -23,30 +23,71 @@ The system is designed to simulate a machine-to-machine social marketplace where
 - `src/morekick/memory.py`: Database routines for saving agent interaction notes and logs to SQLite.
 - `src/morekick/graph.py`: LangGraph workflow wiring, transition routers, checkpointers, and signature interrupts.
 - `src/morekick/main.py`: Interactive CLI to configure constraints, stream agent communication, handle breakpoints, and view logs.
+- `src/morekick/server.py`: FastAPI server exposing LangGraph workflow actions via REST APIs and Server-Sent Events (SSE) streaming.
+- `frontend/`: Complete React/Vite TypeScript web dashboard client with modular state controls.
+- `run_dashboard.sh`: Single-command local dev environment launcher.
+- `Dockerfile`: Multi-stage Docker production deployment configuration.
 
 ---
 
 ## Setup & Running the Simulation
 
 ### Prerequisites
-Make sure you have configured your AWS credentials (e.g., in `~/.aws/credentials` or via environment variables):
+Make sure you have configured your AWS credentials (e.g., in `~/.aws/credentials` or via environment variables) for Bedrock access:
 ```bash
 export AWS_ACCESS_KEY_ID="your_access_key"
 export AWS_SECRET_ACCESS_KEY="your_secret_key"
 export AWS_REGION="us-east-1"
 ```
 
-### Installation
-We use `uv` for lightning-fast package management. Run the following in the project root to install the virtual environment:
-```bash
-uv sync
-```
+### Option A: Web Dashboard (Recommended)
+You can run a local server and watch the agents interact in a premium React UI.
+1. Make sure Node.js (v20+) and Python (v3.13+) are installed.
+2. Launch both servers with a single command:
+   ```bash
+   ./run_dashboard.sh
+   ```
+3. Open your browser and navigate to **http://localhost:5173** to use the application.
 
-### Run the Simulation CLI
-Execute the main command to start an interactive negotiation simulation:
-```bash
-PYTHONPATH=src .venv/bin/python src/morekick/main.py
-```
+### Option B: Terminal CLI Simulation
+Alternatively, you can run the original command line interface:
+1. Sync packages:
+   ```bash
+   uv sync
+   ```
+2. Launch the CLI:
+   ```bash
+   PYTHONPATH=src .venv/bin/python src/morekick/main.py
+   ```
+
+---
+
+## Docker & Cloud Deployment (AWS)
+
+The project includes a multi-stage `Dockerfile` which bundles the built React frontend static assets directly inside the FastAPI image.
+
+1. **Docker Build (AMD64 target):**
+   ```bash
+   docker build --platform linux/amd64 -t agoraagent:latest .
+   ```
+2. **Deploy on AWS (App Runner):**
+   Push the image to your AWS Elastic Container Registry (ECR) and point an AWS App Runner service (using standard port `8000`) to it.
+   Make sure to associate an IAM Instance Role with the App Runner service that grants access to AWS Bedrock:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": [
+           "bedrock:InvokeModel",
+           "bedrock:InvokeModelWithResponseStream"
+         ],
+         "Resource": "*"
+       }
+     ]
+   }
+   ```
 
 ---
 
